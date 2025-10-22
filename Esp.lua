@@ -1,470 +1,486 @@
+-- This was my first time ever using the drawing library, there's probably 200 issues I haven't found yet. Please tell me if there are any problems.
 
--- // table
-local esplib = getgenv().esplib
-if not esplib then
-    esplib = {
-        box = {
-            enabled = true,
-            type = "normal", -- normal, corner
-            padding = 1.15,
-            fill = Color3.new(1,1,1),
-            outline = Color3.new(0,0,0),
-        },
-        healthbar = {
-            enabled = true,
-            fill = Color3.new(0,1,0),
-            outline = Color3.new(0,0,0),
-        },
-        name = {
-            enabled = true,
-            fill = Color3.new(1,1,1),
-            size = 13,
-        },
-        distance = {
-            enabled = true,
-            fill = Color3.new(1,1,1),
-            size = 13,
-        },
-        tracer = {
-            enabled = true,
-            fill = Color3.new(1,1,1),
-            outline = Color3.new(0,0,0),
-            from = "mouse", -- mouse, head, top, bottom, center
-        },
-    }
-    getgenv().esplib = esplib
-end
 
-local espinstances = {}
-local espfunctions = {}
+local Players = game:GetService("Players")
 
--- // services
-local run_service = game:GetService("RunService")
-local players = game:GetService("Players")
-local user_input_service = game:GetService("UserInputService")
-local camera = workspace.CurrentCamera
-
--- // optimized bounding box calculation
-local box_offsets = {
-    Vector3.new( 1,  1,  1),
-    Vector3.new(-1,  1,  1),
-    Vector3.new( 1, -1,  1),
-    Vector3.new(-1, -1,  1),
-    Vector3.new( 1,  1, -1),
-    Vector3.new(-1,  1, -1),
-    Vector3.new( 1, -1, -1),
-    Vector3.new(-1, -1, -1),
+local ESP = {
+    Enabled = true,
+    Settings = {
+        RemoveOnDeath = true,
+        MaxDistance = 300, -- Max Distance for esp to render (IN METERS).
+        MaxBoxSize = Vector3.new(15, 15, 0), -- Max size for ESP boxes.
+        DestroyOnRemove = true, -- Whether the ESP objects should be deleted when the character is parented to nil, change this if you want.
+        TeamColors = false, -- Whether or not the ESP color is based on team colors.
+        TeamBased = false, -- Whether or not the ESP should render ESP on teammates. 
+        BoxTopOffset = Vector3.new(0, 1, 0), -- Offset for where the top of the box should be
+        
+        Boxes = {
+            Enabled = true,
+            Color = Color3.new(1, 0, 1),
+            Thickness = 1,
+        },
+        Names = {
+            Distance = true,
+            Health = true, -- Adds health values to the nametag.
+            Enabled = true,
+            Resize = true, -- Resizes the text based on the distance from the camera to the player so text doesn't get ridiculously large the further you are from the target.
+            ResizeWeight = 0.05, -- How quickly names are resized based on the distance from the camera.
+            Color = Color3.new(1, 1, 1),
+            Size = 18,
+            Font = 1,
+            Center = true,
+            Outline = true,
+        },
+        Tracers = {
+            Enabled = true,
+            Thickness = 0,
+            Color = Color3.new(1, 0, 1),
+        }
+    },
+    Objects = {} -- Table of ESP objects that you can read and do fun stuff with, however, editing settings changes the settings for every object at the same time so this is only needed if you want to set settings for individual targets.
 }
 
-local function process_part(cf, size, min, max)
-    local onscreen = false
-    for i = 1, 8 do
-        local offset = box_offsets[i] * size
-        local pos, visible = camera:WorldToViewportPoint(cf:PointToWorldSpace(offset))
-        if visible then
-            min = min:Min(Vector2.new(pos.X, pos.Y))
-            max = max:Max(Vector2.new(pos.X, pos.Y))
-            onscreen = true
-        end
-    end
-    return min, max, onscreen
-end
 
-local function get_bounding_box(instance)
-    local min = Vector2.new(math.huge, math.huge)
-    local max = Vector2.new(-math.huge, -math.huge)
-    local onscreen = false
 
-    if instance:IsA("Model") then
-        local padding = esplib.box.padding
-        for _, child in ipairs(instance:GetChildren()) do
-            local part
-            if child:IsA("BasePart") then
-                part = child
-            elseif child:IsA("Accessory") then
-                part = child:FindFirstChild("Handle")
-            end
-            
-            if part and part:IsA("BasePart") then
-                local size = (part.Size / 2) * padding
-                local new_min, new_max, visible = process_part(part.CFrame, size, min, max)
-                min = new_min
-                max = new_max
-                onscreen = onscreen or visible
-            end
-        end
-    elseif instance:IsA("BasePart") then
-        local size = instance.Size / 2
-        min, max, onscreen = process_part(instance.CFrame, size, min, max)
-    end
 
-    return min, max, onscreen
-end
 
-function espfunctions.add_box(instance)
-    if not instance or espinstances[instance] and espinstances[instance].box then return end
+-- Initial functions for the lib that are used in functions like GetQuad, DrawQuad, Etc.
 
-    local box = {}
-
-    local outline = Drawing.new("Square")
-    outline.Thickness = 3
-    outline.Filled = false
-    outline.Transparency = 1
-    outline.Visible = false
-
-    local fill = Drawing.new("Square")
-    fill.Thickness = 1
-    fill.Filled = false
-    fill.Transparency = 1
-    fill.Visible = false
-
-    box.outline = outline
-    box.fill = fill
-
-    box.corner_fill = {}
-    box.corner_outline = {}
-    for i = 1, 8 do
-        local outline = Drawing.new("Line")
-        outline.Thickness = 3
-        outline.Transparency = 1
-        outline.Visible = false
-
-        local fill = Drawing.new("Line")
-        fill.Thickness = 1
-        fill.Transparency = 1
-        fill.Visible = false
-        table.insert(box.corner_fill, fill)
-
-        table.insert(box.corner_outline, outline)
-    end
-
-    espinstances[instance] = espinstances[instance] or {}
-    espinstances[instance].box = box
-end
-
-function espfunctions.add_healthbar(instance)
-    if not instance or espinstances[instance] and espinstances[instance].healthbar then return end
-    local outline = Drawing.new("Square")
-    outline.Thickness = 1
-    outline.Filled = true
-    outline.Transparency = 1
-
-    local fill = Drawing.new("Square")
-    fill.Filled = true
-    fill.Transparency = 1
-
-    espinstances[instance] = espinstances[instance] or {}
-    espinstances[instance].healthbar = {
-        outline = outline,
-        fill = fill,
-    }
-end
-
-function espfunctions.add_name(instance)
-    if not instance or espinstances[instance] and espinstances[instance].name then return end
-    local text = Drawing.new("Text")
-    text.Center = true
-    text.Outline = true
-    text.Font = 1
-    text.Transparency = 1
-
-    espinstances[instance] = espinstances[instance] or {}
-    espinstances[instance].name = text
-end
-
-function espfunctions.add_distance(instance)
-    if not instance or espinstances[instance] and espinstances[instance].distance then return end
-    local text = Drawing.new("Text")
-    text.Center = true
-    text.Outline = true
-    text.Font = 1
-    text.Transparency = 1
-
-    espinstances[instance] = espinstances[instance] or {}
-    espinstances[instance].distance = text
-end
-
-function espfunctions.add_tracer(instance)
-    if not instance or espinstances[instance] and espinstances[instance].tracer then return end
-    local outline = Drawing.new("Line")
-    outline.Thickness = 3
-    outline.Transparency = 1
-
-    local fill = Drawing.new("Line")
-    fill.Thickness = 1
-    fill.Transparency = 1
-
-    espinstances[instance] = espinstances[instance] or {}
-    espinstances[instance].tracer = {
-        outline = outline,
-        fill = fill,
-    }
-end
-
-function espfunctions.remove(instance)
-    local data = espinstances[instance]
-    if not data then return end
+local function Draw(Type, Properties) -- Manually writing every property and Drawing.new() is extremely painful, making it a table is bazed. I definitely didn't steal this idea from ic3w0lf.
+    local Object = Drawing.new(Type)
     
-    if data.box then
-        data.box.outline:Remove()
-        data.box.fill:Remove()
-        for _, line in ipairs(data.box.corner_fill) do
-            line:Remove()
-        end
-        for _, line in ipairs(data.box.corner_outline) do
-            line:Remove()
-        end
+    for Property, Value in next, Properties or {} do -- Prevents errors
+        Object[Property] = Value
     end
-    if data.healthbar then
-        data.healthbar.outline:Remove()
-        data.healthbar.fill:Remove()
-    end
-    if data.name then
-        data.name:Remove()
-    end
-    if data.distance then
-        data.distance:Remove()
-    end
-    if data.tracer then
-        data.tracer.outline:Remove()
-        data.tracer.fill:Remove()
-    end
-    espinstances[instance] = nil
+    
+    return Object
 end
 
--- // main thread
-run_service.RenderStepped:Connect(function()
-    for instance, data in pairs(espinstances) do
-        if not instance or not instance.Parent then
-            espfunctions.remove(instance)
-            continue
+function ESP:GetScreenPosition(Position) -- Gets the screen position of a vector3 / cframe.
+    local Position = typeof(Position) ~= "CFrame" and Position or Position.Position -- I'm probably going to forget to use .Position like a proper dumbfuck.
+    local ScreenPos, IsOnScreen = workspace.CurrentCamera:WorldToViewportPoint(Position)
+    
+    return Vector2.new(ScreenPos.X, ScreenPos.Y), IsOnScreen -- fuck the depth value i dont want it :<
+end
+
+function ESP:GetDistance(Position) -- Gets the distance (IN METERS) from the camera position to a target position.
+    local Magnitude = (workspace.CurrentCamera.CFrame.Position - Position).Magnitude
+    local Metric = Magnitude * 0.28 -- Converts studs to meters
+    
+    return math.round(Metric)
+end
+
+function ESP:GetHealth(Model) -- Tries to find a humanoid and grab its health, this needs to be overwritten in games that have custom health paths.
+    local Humanoid = Model:FindFirstChildOfClass("Humanoid")
+    
+    if Humanoid then
+        return Humanoid.Health, Humanoid.MaxHealth, (Humanoid.Health / Humanoid.MaxHealth) * 100
+    end
+    
+    return 100, 100, 100
+end
+
+function ESP:GetPlayerFromCharacter(Model) -- Tries to get a player from their character, if the character doesn't have a player linked to it (thanks custom character games like bad business), it returns nil.
+    return Players:GetPlayerFromCharacter(Model)
+end
+
+function ESP:GetTeam(Model) -- Tries to get a player's team from their character model, if there is no player linked, this returns nil.
+    local Player = ESP:GetPlayerFromCharacter(Model)
+    
+    return Player and Player.Team or nil
+end
+
+function ESP:GetPlayerTeam(Player) -- Tries to get a player's team, this won't work in games that have custom modules to get player teams and needs to be overwritten.
+    return Player and Player.Team
+end
+
+function ESP:IsHostile(Model) -- Tries to check if a player is hostile based on their team, this, again, won't work with custom characters.
+    local Player = ESP:GetPlayerFromCharacter(Model)
+    local MyTeam, TheirTeam = ESP:GetPlayerTeam(Players.LocalPlayer), ESP:GetPlayerTeam(Player)
+    
+    return (MyTeam ~= TheirTeam)
+end
+
+function ESP:GetTeamColor(Model) -- Tries to get a player's teamcolor from their character model or from their player directly.
+    local Team = Model:IsA("Model") and ESP:GetTeam(Model) or Model:IsA("Player") and ESP:GetPlayerTeam(Model) 
+    
+    return Team and Team.TeamColor.Color or Color3.new(1, 0, 0)
+end
+
+function ESP:GetOffset(Model)
+    local Humanoid = Model:FindFirstChild("Humanoid")
+    
+    if Humanoid and Humanoid.RigType == Enum.HumanoidRigType.R6 then
+        return CFrame.new(0, -1.75, 0)
+    end
+    
+    return CFrame.new(0, 0, 0)
+end
+
+function ESP:CharacterAdded(Player) -- Some games have custom characteradded signals, edit this if you want to change it for compatibility.
+    return Player.CharacterAdded
+end
+
+function ESP:GetCharacter(Player) -- Some games have custom characters and leave player.Character nil, edit this if you need it.
+    return Player.Character
+end
+
+local function Validate(Child, Type, ClassName, ExpectedName)
+    return not (Type or ClassName or ExpectedName) or (not ExpectedName or (ExpectedName and Child.Name == ExpectedName)) and (not ClassName or (ClassName and Child.ClassName == ClassName)) and (not Type or (Type and Child:IsA(Type))) -- I hate my life.
+end
+
+function ESP:AddListener(Model, Validator, Settings)
+    local Descendants = Settings.Descendants
+    local Type, ClassName, ExpectedName = Settings.Type, Settings.ClassName, Settings.ExpectedName
+    local ExtraSettings = Settings.Custom or {}
+    
+    local function ValidCheck(Child)
+        if typeof(Validator) == "function" and Validator(Child) or not Validator then
+            if Validate(Child, Type, ClassName, ExpectedName) then
+                ESP.Object:New(Child, ExtraSettings)
+            end
         end
+    end
+    
+    local Connection = Descendants and Model.DescendantAdded or Model.ChildAdded
+    local ObjectsToCheck = Descendants and Model.GetDescendants or Model.GetChildren
+    
+    Connection:Connect(function(Child)
+        task.spawn(ValidCheck, Child)
+    end)
+    
+    for i, Child in next, ObjectsToCheck(Model) do
+        task.spawn(ValidCheck, Child)
+    end
+end
 
-        if instance:IsA("Model") and not instance.PrimaryPart then
-            continue
+
+-- Actual drawing functions for making boxes and stuff weee.
+
+local Object = {}
+Object.__index = Object
+
+ESP.Object = Object
+
+local function Clone(Table) -- es not mine i stole it from roblox docs
+    local Ret = {}
+    
+    for i,v in next, Table do
+        if typeof(v) == "table" then
+            v = Clone(v)
         end
+        
+        Ret[i] = v
+    end
+    
+    return Ret
+end
 
-        local min, max, onscreen = get_bounding_box(instance)
+local function GetValue(Local, Global, Name) -- Blame the bird. Easy way to check if a setting is enabled on either the object settings or global settings.
+    local GlobalVal = Global[Name]
+    local LocalVal = Local[Name]
+    
+    return LocalVal or ((LocalVal == nil or typeof(LocalVal) ~= "boolean") and GlobalVal)
+end
 
-        if data.box then
-            local box = data.box
-
-            if esplib.box.enabled and onscreen then
-                local x, y = min.X, min.Y
-                local w, h = (max - min).X, (max - min).Y
-                local len = math.min(w, h) * 0.25
-
-                if esplib.box.type == "normal" then
-                    box.outline.Position = min
-                    box.outline.Size = max - min
-                    box.outline.Color = esplib.box.outline
-                    box.outline.Visible = true
-
-                    box.fill.Position = min
-                    box.fill.Size = max - min
-                    box.fill.Color = esplib.box.fill
-                    box.fill.Visible = true
-
-                    for _, line in ipairs(box.corner_fill) do
-                        line.Visible = false
-                    end
-                    for _, line in ipairs(box.corner_outline) do
-                        line.Visible = false
-                    end
-
-                elseif esplib.box.type == "corner" then
-                    local fill_lines = box.corner_fill
-                    local outline_lines = box.corner_outline
-                    local fill_color = esplib.box.fill
-                    local outline_color = esplib.box.outline
-
-                    local corners = {
-                        { Vector2.new(x, y), Vector2.new(x + len, y) },
-                        { Vector2.new(x, y), Vector2.new(x, y + len) },
-
-                        { Vector2.new(x + w - len, y), Vector2.new(x + w, y) },
-                        { Vector2.new(x + w, y), Vector2.new(x + w, y + len) },
-
-                        { Vector2.new(x, y + h), Vector2.new(x + len, y + h) },
-                        { Vector2.new(x, y + h - len), Vector2.new(x, y + h) },
-
-                        { Vector2.new(x + w - len, y + h), Vector2.new(x + w, y + h) },
-                        { Vector2.new(x + w, y + h - len), Vector2.new(x + w, y + h) },
-                    }
-
-                    for i = 1, 8 do
-                        local from, to = corners[i][1], corners[i][2]
-                        local dir = (to - from).Unit
-                        local oFrom = from - dir
-                        local oTo = to + dir
-
-                        local o = outline_lines[i]
-                        o.From = oFrom
-                        o.To = oTo
-                        o.Color = outline_color
-                        o.Visible = true
-
-                        local f = fill_lines[i]
-                        f.From = from
-                        f.To = to
-                        f.Color = fill_color
-                        f.Visible = true
-                    end
-
-                    box.outline.Visible = false
-                    box.fill.Visible = false
-                end
-            else
-                box.outline.Visible = false
-                box.fill.Visible = false
-                for _, line in ipairs(box.corner_fill) do
-                    line.Visible = false
-                end
-                for _, line in ipairs(box.corner_outline) do
-                    line.Visible = false
+function Object:New(Model, ExtraInfo) -- Object:New(Target, {Name = "Custom Name", Settings = {Box = {Color = Color3.new(0, 1, 0)}}})
+    if not Model then
+        return
+    end
+    
+    local Settings = ESP.Settings
+    
+    local NewObject = {
+        Connections = {},
+        RenderSettings = {
+            Boxes = {},
+            Tracers = {},
+            Names = {},
+        },
+        GlobalSettings = Settings,
+        Model = Model,
+        Name = Model.Name,
+        
+        Objects = {
+            Box = {
+                Color = Settings.Boxes.Color,
+                Thickness = Settings.Boxes.Thickness,
+            },
+        
+            Name = {
+                Color = Settings.Names.Color,
+                Outline = Settings.Names.Outline,
+                Text = Model.Name,
+                Size = Settings.Names.Size,
+                Font = Settings.Names.Font,
+                Center = Settings.Names.Center,
+            },
+            
+            Tracer = {
+                Thickness = Settings.Tracers.Thickness,
+                Color = Settings.Tracers.Color,
+            }
+        },
+    }
+    
+    for Property, Value in next, ExtraInfo or {} do -- Honestly, I did this at 2am and I can't remember why I did it, probably because I had to filter variables so the stupid drawing objects wouldn't get ESP settings tangled up in the variabled like Enabled, causing an error.
+        
+        if Property ~= "Settings" then
+            NewObject[Property] = Value
+        else
+            for Name, Table in next, Value do
+                for Property, Value in next, Table do
+                    NewObject.RenderSettings[Name][Property] = Value
                 end
             end
         end
+    end
+    
+    NewObject = setmetatable(NewObject, Object)
+    ESP.Objects[Model] = NewObject
 
-        if data.healthbar then
-            local outline, fill = data.healthbar.outline, data.healthbar.fill
-
-            if not esplib.healthbar.enabled or not onscreen then
-                outline.Visible = false
-                fill.Visible = false
-            else
-                local humanoid = instance:FindFirstChildOfClass("Humanoid")
-                if humanoid then
-                    local height = max.Y - min.Y
-                    local padding = 1
-                    local x = min.X - 3 - 1 - padding
-                    local y = min.Y - padding
-                    local health = math.clamp(humanoid.Health / humanoid.MaxHealth, 0, 1)
-                    local fillheight = height * health
-
-                    outline.Color = esplib.healthbar.outline
-                    outline.Position = Vector2.new(x, y)
-                    outline.Size = Vector2.new(1 + 2 * padding, height + 2 * padding)
-                    outline.Visible = true
-
-                    fill.Color = esplib.healthbar.fill
-                    fill.Position = Vector2.new(x + padding, y + (height + padding) - fillheight)
-                    fill.Size = Vector2.new(1, fillheight)
-                    fill.Visible = true
-                else
-                    outline.Visible = false
-                    fill.Visible = false
-                end
-            end
+    NewObject.Objects.Box = Draw("Quad", NewObject.Objects.Box)
+    NewObject.Objects.Name = Draw("Text", NewObject.Objects.Name)
+    NewObject.Objects.Tracer = Draw("Line", NewObject.Objects.Tracer)
+    
+    NewObject.Connections.Destroying = Model.Destroying:Connect(function() -- We don't want the ESP to try to render an object that doesn't exist anymore.
+        NewObject:Destroy()
+    end)
+    
+    NewObject.Connections.AncestryChanged = Model.AncestryChanged:Connect(function(Old, New) -- Ditto on the Destroying connection, but some games might try to parent characters to nil to prevent esp so this could cause problems and can be toggled.
+        if not Model:IsDescendantOf(workspace) and NewObject.RenderSettings.DestroyOnRemove or NewObject.GlobalSettings.DestroyOnRemove then
+            NewObject:Destroy()
         end
+    end)
 
-        if data.name then
-            if esplib.name.enabled and onscreen then
-                local text = data.name
-                local center_x = (min.X + max.X) / 2
-                local y = min.Y - 15
-
-                local name_str = instance.Name
-                local humanoid = instance:FindFirstChildOfClass("Humanoid")
-                if humanoid then
-                    local player = players:GetPlayerFromCharacter(instance)
-                    if player then
-                        name_str = player.Name
-                    end
-                end
-
-                text.Text = name_str
-                text.Size = esplib.name.size
-                text.Color = esplib.name.fill
-                text.Position = Vector2.new(center_x, y)
-                text.Visible = true
-            else
-                data.name.Visible = false
+    local Humanoid = Model:FindFirstChildOfClass("Humanoid")
+    
+    if Humanoid then
+        NewObject.Connections.Died = Humanoid.Died:Connect(function()
+            if Settings.RemoveOnDeath then
+                NewObject:Destroy()
             end
+        end)
+    end
+    
+    NewObject.Connections.Removing = Model.AncestryChanged:Connect(function()
+        if NewObject.RenderSettings.DestroyOnRemove or NewObject.GlobalSettings.DestroyOnRemove then
+            NewObject:Destroy()
         end
+    end)
+    
+    return NewObject
+end
 
-        if data.distance then
-            if esplib.distance.enabled and onscreen then
-                local text = data.distance
-                local center_x = (min.X + max.X) / 2
-                local y = max.Y + 5
-                local dist
-                if instance:IsA("Model") then
-                    if instance.PrimaryPart then
-                        dist = (camera.CFrame.Position - instance.PrimaryPart.Position).Magnitude
-                    else
-                        local part = instance:FindFirstChildWhichIsA("BasePart")
-                        if part then
-                            dist = (camera.CFrame.Position - part.Position).Magnitude
-                        else
-                            dist = 999
-                        end
-                    end
-                else
-                    dist = (camera.CFrame.Position - instance.Position).Magnitude
-                end
-                text.Text = tostring(math.floor(dist)) .. "m"
-                text.Size = esplib.distance.size
-                text.Color = esplib.distance.fill
-                text.Position = Vector2.new(center_x, y)
-                text.Visible = true
-            else
-                data.distance.Visible = false
-            end
-        end
+function Object:GetQuad() -- Gets a table of positions for use in pretty much every ESP function. This also returns if the player is onscreen and will not return anything in the case that they aren't.
+    local RenderSettings = self.RenderSettings
+    local GlobalSettings = self.GlobalSettings
+    
+    local MaxSize = GetValue(RenderSettings, GlobalSettings, "MaxBoxSize")
+    local BoxTopOffset = GetValue(RenderSettings, GlobalSettings, "BoxTopOffset")
+    
+    local Model = self.Model
+    local Pivot = Model:GetPivot()
+    local BoxPosition, Size = Model:GetBoundingBox()
+    
+    Pivot = Pivot * ESP:GetOffset(Model)
+    
+    Size = Size * Vector3.new(1, 1, 0) -- Thanks synapse editor for not supporting compound operators very cool (also fuck the depth).
 
-        if data.tracer then
-            if esplib.tracer.enabled and onscreen then
-                local outline, fill = data.tracer.outline, data.tracer.fill
+    local X, Y = math.clamp(Size.X, 1, MaxSize.X) / 2, math.clamp(Size.Y, 1, MaxSize.Y) / 2
+    
+    -- Hey check out this amazing epic readable math and very simple easy-to-type variable names.
+    -- There's some leftover code here from when I was using Vector3s instead of CFrames. If you want boxes to be locked on one axis, you can add this back. You're a sociopath if you do, though.
+    local PivotVector, PivotOnScreen = (ESP:GetScreenPosition(Pivot.Position))
+    local BoxTop = ESP:GetScreenPosition((Pivot * CFrame.new(0, Y, 0)).Position + (BoxTopOffset)) --[[+ (Size * Vector3.new(0, 1, 0) / 2) + Vector3.new(0, 1, 0)]]
+    local BoxBottom = ESP:GetScreenPosition((Pivot * CFrame.new(0, -Y, 0)).Position)
+    local TopRight, TopRightOnScreen = ESP:GetScreenPosition((Pivot * CFrame.new(-X, Y, 0)).Position) --[[+ ((Size * Vector3.new(-1, 1, 0)) / 2)]]
+    local TopLeft, TopLeftOnScreen = ESP:GetScreenPosition((Pivot * CFrame.new(X, Y, 0)).Position)--[[Pivot + (Size / 2))]]
+    local BottomLeft, BottomLeftOnScreen = ESP:GetScreenPosition((Pivot * CFrame.new(X, -Y, 0)).Position) --[[+ ((Size * Vector3.new(1, -1, 0)) / 2))]]
+    local BottomRight, BottomRightOnScreen = ESP:GetScreenPosition((Pivot * CFrame.new(-X, -Y, 0)).Position)--[[ - (Size / 2))]]
+    
+    if TopRightOnScreen or TopLeftOnScreen or BottomLeftOnScreen or BottomRightOnScreen then -- Boxes don't cause weird drawing issues if any part of the character is on-screen (only checks the bounding box, a player's arm can be slightly poking out and the box won't draw).
+        local Positions = {
+            BoxBottom = BoxBottom, -- For tracers :3.
+            Pivot = PivotVector, -- The model base because maybe I'll use it? I have no idea stop asking me these questions.
+            BoxTop = BoxTop, -- Just above the top of the model because funny nametag esp.
+            TopRight = TopRight,    -- Top Right
+            TopLeft = TopLeft,     -- Top Left
+            BottomLeft = BottomLeft,  -- Bottom Left
+            BottomRight = BottomRight, -- Bottom Right
+        }
+    
+        return Positions, true -- The player is on the screen, so the box can be drawn.
+    end
+    
+    return false -- The player is offscreen and drawing this box is going to do crazy shit, stop.
+end
 
-                local from_pos = Vector2.new()
-                local to_pos = Vector2.new()
+function Object:DrawBox(Quad) -- Draws a box around the player based on a given quad.
+    local RenderSettings = self.RenderSettings
+    local GlobalSettings = self.GlobalSettings
+    
+    local RenderBoxes = RenderSettings.Boxes
+    local GlobalBoxes = GlobalSettings.Boxes
+    
+    local TeamColors = GetValue(RenderSettings, GlobalSettings, "TeamColors")
+    local Thickness = GetValue(RenderBoxes, GlobalBoxes, "Thickness")
+    local Color = GetValue(RenderBoxes, GlobalBoxes, "Color")
 
-                if esplib.tracer.from == "mouse" then
-                    local mouse_location = user_input_service:GetMouseLocation()
-                    from_pos = Vector2.new(mouse_location.X, mouse_location.Y)
-                elseif esplib.tracer.from == "head" then
-                    local head = instance:FindFirstChild("Head")
-                    if head then
-                        local pos, visible = camera:WorldToViewportPoint(head.Position)
-                        if visible then
-                            from_pos = Vector2.new(pos.X, pos.Y)
-                        else
-                            from_pos = Vector2.new(camera.ViewportSize.X/2, camera.ViewportSize.Y)
-                        end
-                    else
-                        from_pos = Vector2.new(camera.ViewportSize.X/2, camera.ViewportSize.Y)
-                    end
-                elseif esplib.tracer.from == "bottom" then
-                    from_pos = Vector2.new(camera.ViewportSize.X/2, camera.ViewportSize.Y)
-                elseif esplib.tracer.from == "center" then
-                    from_pos = Vector2.new(camera.ViewportSize.X/2, camera.ViewportSize.Y/2)
-                else
-                    from_pos = Vector2.new(camera.ViewportSize.X/2, camera.ViewportSize.Y)
-                end
+    local Properties = {
+        Visible = true,
+        Color = TeamColors and ESP:GetTeamColor(self.Model) or Color,
+        Thickness = Thickness,
+        PointA = Quad.TopRight,
+        PointB = Quad.TopLeft,
+        PointC = Quad.BottomLeft,
+        PointD = Quad.BottomRight,
+    }
+    
+    for Property, Value in next, Properties do
+        self.Objects.Box[Property] = Value
+    end
+end
 
-                to_pos = (min + max) / 2
+function Object:DrawName(Quad)
+    local RenderSettings = self.RenderSettings
+    local GlobalSettings = self.GlobalSettings
+    
+    local RenderNames = RenderSettings.Names
+    local GlobalNames = GlobalSettings.Names
+    
+    
+    local Settings = RenderSettings.Names or GlobalNames
+    
+    local ShowDistance = GetValue(RenderNames, GlobalNames, "Distance")
+    local Size = GetValue(RenderNames, GlobalNames, "Size")
+    local Resize = GetValue(RenderNames, GlobalNames, "Resize")
+    local ResizeWeight = GetValue(RenderNames, GlobalNames, "ResizeWeight")
+    local ShowHealth = GetValue(RenderNames, GlobalNames, "Health")
+    local Font = GetValue(RenderNames, GlobalNames, "Font")
+    local Center = GetValue(RenderNames, GlobalNames, "Center")
+    local TeamColors = GetValue(RenderNames, GlobalNames, "TeamColors")
+    local Color = GetValue(RenderNames, GlobalNames, "Color")
+    local Outline = GetValue(RenderNames, GlobalNames, "Outline")
+    
+    local Distance = self.Model:GetPivot().Position
+    
+    local Properties = {
+        Visible = true,
+        Color = TeamColors and ESP:GetTeamColor(self.Model) or Color,
+        Outline = Outline,
+        Text = not (Size or ShowHealth) and self.Name or ("%s [%sm]%s"):format(self.Name, ShowDistance and tostring(ESP:GetDistance(Distance)) or "", ShowHealth and ("\n%d/%d (%d%%)"):format(ESP:GetHealth(self.Model)) or ""), -- My god this is an ugly string.format
+        Size = not Resize and Size or Size - math.clamp((ESP:GetDistance(Distance) * ResizeWeight), 1, Size * 0.75),
+        Font = Font,
+        Center = Center,
+        Position = Quad.BoxTop,
+    }
 
-                outline.From = from_pos
-                outline.To = to_pos
-                outline.Color = esplib.tracer.outline
-                outline.Visible = true
+    for Property, Value in next, Properties do
+        self.Objects.Name[Property] = Value
+    end
+end
 
-                fill.From = from_pos
-                fill.To = to_pos
-                fill.Color = esplib.tracer.fill
-                fill.Visible = true
-            else
-                data.tracer.outline.Visible = false
-                data.tracer.fill.Visible = false
-            end
-        end
+function Object:DrawTracer(Quad)
+    local RenderSettings = self.RenderSettings
+    local GlobalSettings = self.GlobalSettings
+    
+    local RenderTracers = RenderSettings.Tracers
+    local GlobalTracers = GlobalSettings.Tracers
+    
+    local TeamColors = GetValue(RenderTracers, GlobalTracers, "TeamColors")
+    local Color = GetValue(RenderTracers, GlobalTracers, "Color")
+    local Thickness = GetValue(RenderTracers, GlobalTracers, "Thickness")
+    
+    local Properties = {
+        Visible = true,
+        Color = TeamColors and ESP:GetTeamColor(self.Model) or Color,
+        Thickness = Thickness,
+        From = workspace.CurrentCamera.ViewportSize * Vector2.new(.5, 1),
+        To = Quad.BoxBottom,
+    }
+    
+    for Property, Value in next, Properties do
+        self.Objects.Tracer[Property] = Value
+    end
+end
+
+function Object:Destroy()
+    ESP.Objects[self.Model] = nil
+    self:ClearDrawings()
+    
+    for i,v in next, self.Objects do
+        v:Remove()
+    end
+    
+    for i,v in next, self.Connections do -- I could use a module like maid but I'm lazy.
+        v:Disconnect()
+    end
+    
+    table.clear(self.Objects)
+end
+
+function Object:ClearDrawings()
+    for i,v in next, self.Objects do
+        v.Visible = false
+    end
+end
+
+function Object:Refresh()
+    local Model = self.Model
+    local Quad = self:GetQuad()
+    local RenderSettings = self.RenderSettings
+    local GlobalSettings = self.GlobalSettings
+    
+    local TeamBased = GetValue(RenderSettings, GlobalSettings, "TeamBased")
+    local MaxDistance = GetValue(RenderSettings, GlobalSettings, "MaxDistance")
+    local Boxes = GetValue(RenderSettings.Boxes, GlobalSettings.Boxes, "Enabled")
+    local Names = GetValue(RenderSettings.Names, GlobalSettings.Names, "Enabled")
+    local Tracers = GetValue(RenderSettings.Tracers, GlobalSettings.Tracers, "Enabled")
+    
+    if not ESP.Enabled then
+        return self:ClearDrawings() -- This is obvious and doesn't need a comment, but I am adding a comment here because it's funny.
+    end
+    
+    if not Model.Parent or not Model:IsDescendantOf(workspace) then
+        return self:ClearDrawings() -- I don't want stuff to render in nil, edit this if you don't like it pls.
+    end
+    
+    if not Quad then 
+        return self:ClearDrawings() -- Player isn't on-screen
+    end
+    
+    if TeamBased and not ESP:IsHostile(Model) then
+        return self:ClearDrawings()
+    end
+    
+    if ESP:GetDistance(Model:GetPivot().Position) > MaxDistance then
+        return self:ClearDrawings()
+    end
+    
+    if Boxes then
+        self:DrawBox(Quad)
+    else
+        self.Objects.Box.Visible = false
+    end
+    
+    if Names then
+        self:DrawName(Quad)
+    else
+        self.Objects.Name.Visible = false
+    end
+    
+    if Tracers then
+        self:DrawTracer(Quad)
+    else
+        self.Objects.Tracer.Visible = false
+    end
+end
+
+game.RunService.Stepped:Connect(function()
+    for i, Object in next, ESP.Objects do
+        Object:Refresh()
     end
 end)
 
--- // return
-for k, v in pairs(espfunctions) do
-    esplib[k] = v
-end
-
-return esplib
+return ESP
